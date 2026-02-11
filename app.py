@@ -4,9 +4,11 @@ import pandas as pd
 from streamlit_folium import st_folium
 import folium
 from folium.plugins import MarkerCluster
+import time
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Inteligencia Territorial", page_icon="🗺️", layout="wide")
+# Cambiamos layout a "centered" para que se vea más como web y menos como dashboard ancho
+st.set_page_config(page_title="Inteligencia Territorial", page_icon="🗺️", layout="centered")
 
 # Inicializar Supabase
 @st.cache_resource
@@ -17,7 +19,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- 2. FUNCIONES DE AUTH (Tu lógica original simplificada) ---
+# --- 2. FUNCIONES DE AUTH ---
 def mostrar_login():
     st.markdown("## 🔐 Acceso a Plataforma")
     email = st.text_input("Correo Electrónico")
@@ -43,11 +45,8 @@ def cerrar_sesion():
 def cargar_excel_ssr(file):
     """Procesa el Excel de SSR específico que subiste"""
     try:
-        # Leemos el excel
         df = pd.read_excel(file)
         
-        # Mapeo de columnas basado en tu archivo BD_SSR
-        # Ajusta estos nombres si cambian en el Excel final
         col_map = {
             'NOMBRE_OFICIAL_SISTEMA': 'nombre_oficial',
             'REGIÓN': 'region',
@@ -59,24 +58,19 @@ def cargar_excel_ssr(file):
             'CLASIFICACIÓN_ART_106_D50': 'clasificacion'
         }
         
-        # Verificar que existan las columnas críticas
         if not all(col in df.columns for col in col_map.keys()):
             st.error("El archivo no tiene las columnas esperadas del formato SSR Oficial.")
-            st.write("Columnas encontradas:", df.columns.tolist())
             return None
 
         records_to_insert = []
-        
         progress_bar = st.progress(0)
         total_rows = len(df)
         
         for idx, row in df.iterrows():
-            # Limpieza de coordenadas (Manejo de errores si vienen vacías o con comas)
             try:
                 lat = float(str(row['COORD_GEOGRÁFICAS_LATITUD_SIRGAS_CHILE']).replace(',', '.'))
                 lon = float(str(row['COORD_GEOGRÁFICAS_LONGITUD_SIRGAS_CHILE']).replace(',', '.'))
                 
-                # Crear diccionario de detalles (JSONB)
                 detalles = {
                     "arranques": row.get('N°_ARRANQUES'),
                     "rut": row.get('RUT'),
@@ -86,7 +80,7 @@ def cargar_excel_ssr(file):
 
                 record = {
                     "nombre_oficial": row['NOMBRE_OFICIAL_SISTEMA'],
-                    "tipo_punto": "SSR", # Etiqueta fija para esta carga
+                    "tipo_punto": "SSR",
                     "region": row['REGIÓN'],
                     "comuna": row['COMUNA'],
                     "latitud": lat,
@@ -97,15 +91,12 @@ def cargar_excel_ssr(file):
                 records_to_insert.append(record)
                 
             except Exception as e:
-                # Si falla una fila (ej: sin coordenadas), la saltamos pero podrías loguearla
                 continue
             
             if idx % 100 == 0:
                 progress_bar.progress(idx / total_rows)
 
-        # Insertar en lotes a Supabase
         if records_to_insert:
-            # Supabase a veces limita el tamaño del insert, hacemos lotes de 100
             batch_size = 100
             for i in range(0, len(records_to_insert), batch_size):
                 batch = records_to_insert[i:i + batch_size]
@@ -127,7 +118,8 @@ def obtener_puntos(filtro_region=None, filtro_comuna=None):
     if filtro_comuna and filtro_comuna != "Todas":
         query = query.eq("comuna", filtro_comuna)
         
-    response = query.execute()
+    # --- CAMBIO: AUMENTO DE LIMITE A 5000 ---
+    response = query.range(0, 5000).execute()
     return pd.DataFrame(response.data)
 
 # --- 4. INTERFAZ PRINCIPAL ---
@@ -137,20 +129,15 @@ def main_app():
     if st.sidebar.button("Cerrar Sesión"):
         cerrar_sesion()
 
-    # Tabs de navegación
     tab1, tab2 = st.tabs(["🗺️ Mapa Territorial", "📂 Carga de Datos (Admin)"])
 
     # --- TAB 1: MAPA ---
     with tab1:
         st.title("Visor Territorial")
         
-        # Filtros
         col1, col2 = st.columns(2)
         
-        # Obtener lista única de regiones para el filtro (cacheado idealmente)
-        # Por simplicidad hacemos query ligera o hardcodeamos si son fijas
-        # Aquí traeremos todo primero (cuidado si son +10.000 registros, usar limit)
-        df_base = obtener_puntos() # Trae todo para calcular filtros
+        df_base = obtener_puntos()
         
         if not df_base.empty:
             regiones = ["Todas"] + sorted(df_base['region'].dropna().unique().tolist())
@@ -163,7 +150,6 @@ def main_app():
                 
             comuna_sel = col2.selectbox("Filtrar por Comuna", comunas)
             
-            # Filtrar Dataframe localmente para rapidez visual
             df_show = df_base.copy()
             if region_sel != "Todas":
                 df_show = df_show[df_show['region'] == region_sel]
@@ -172,33 +158,45 @@ def main_app():
                 
             st.caption(f"Mostrando {len(df_show)} puntos")
             
-            # MAPA FOLIUM
+            # --- MAPA GOOGLE HÍBRIDO ---
             if not df_show.empty:
-                # Centro promedio
                 avg_lat = df_show['latitud'].mean()
                 avg_lon = df_show['longitud'].mean()
                 
-                m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6 if region_sel == "Todas" else 10)
+                # tiles=None desactiva el mapa por defecto para poner el de Google
+                m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6 if region_sel == "Todas" else 10, tiles=None)
+                
+                # Capa Google Híbrido (Satelite + Calles)
+                folium.TileLayer(
+                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                    attr='Google',
+                    name='Google Hybrid',
+                    overlay=False,
+                    control=True
+                ).add_to(m)
+
                 marker_cluster = MarkerCluster().add_to(m)
                 
                 for idx, row in df_show.iterrows():
-                    # Extraer detalles del JSONB
                     detalles = row['detalles'] if row['detalles'] else {}
                     arranques = detalles.get('arranques', 'S/I')
                     tipo = row['tipo_punto']
                     
                     html_popup = f"""
-                    <b>{row['nombre_oficial']}</b><br>
-                    Tipo: {tipo}<br>
-                    Arranques: {arranques}<br>
-                    <i>{row['comuna']}</i>
+                    <div style="font-family: sans-serif; min-width: 150px;">
+                        <b>{row['nombre_oficial']}</b><br>
+                        <hr style="margin: 5px 0;">
+                        Tipo: {tipo}<br>
+                        Arranques: {arranques}<br>
+                        <i>{row['comuna']}</i>
+                    </div>
                     """
                     
                     folium.Marker(
                         location=[row['latitud'], row['longitud']],
                         popup=html_popup,
                         tooltip=row['nombre_oficial'],
-                        icon=folium.Icon(color="blue" if tipo == "SSR" else "green", icon="info-sign")
+                        icon=folium.Icon(color="blue" if tipo == "SSR" else "red", icon="info-sign")
                     ).add_to(marker_cluster)
                 
                 st_folium(m, width="100%", height=600)
@@ -216,7 +214,7 @@ def main_app():
         
         if uploaded_file:
             if st.button("Procesar y Guardar en BD"):
-                with st.spinner("Procesando archivo... esto puede tomar unos segundos..."):
+                with st.spinner("Procesando archivo..."):
                     count = cargar_excel_ssr(uploaded_file)
                     if count is not None:
                         st.success(f"¡Éxito! Se han cargado {count} registros nuevos.")
@@ -224,8 +222,6 @@ def main_app():
                         st.rerun()
 
 # --- 5. EJECUCIÓN ---
-import time
-
 if "user" not in st.session_state:
     mostrar_login()
 else:
