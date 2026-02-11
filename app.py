@@ -116,7 +116,6 @@ def cargar_excel_ssr(file):
         return None
 
 # --- SOLUCIÓN ROBUSTA: PAGINACIÓN ---
-# Descarga en bucle hasta traer todos los datos, ignorando límites del servidor
 @st.cache_data(ttl=3600)
 def obtener_puntos_cache():
     all_rows = []
@@ -133,20 +132,27 @@ def obtener_puntos_cache():
             
         all_rows.extend(rows)
         
-        # Si la respuesta es menor al tamaño del batch, llegamos al final
         if len(rows) < batch_size:
             break
             
         start += batch_size
         
-    return pd.DataFrame(all_rows)
+    df = pd.DataFrame(all_rows)
+    
+    # Pre-procesamiento: Extraer columnas clave del JSON 'detalles' para facilitar filtrado
+    if not df.empty and 'detalles' in df.columns:
+        df['arranques'] = df['detalles'].apply(lambda x: x.get('arranques') if x else 0)
+        df['clasificacion'] = df['detalles'].apply(lambda x: x.get('clasificacion') if x else 'S/I')
+        df['beneficiarios'] = df['detalles'].apply(lambda x: x.get('beneficiarios') if x else 0)
+        df['rut'] = df['detalles'].apply(lambda x: x.get('rut') if x else '')
+    
+    return df
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
 def main_app():
     st.sidebar.title(f"Usuario: {st.session_state['user'].email}")
     
-    # Botón útil para refrescar si cargaste datos y no se ven
     if st.sidebar.button("🔄 Actualizar Datos"):
         st.cache_data.clear()
         st.rerun()
@@ -160,34 +166,49 @@ def main_app():
     with tab1:
         st.title("Visor Territorial")
         
-        # Cargamos datos (ahora con loop infinito hasta traer todo)
+        # Cargamos datos
         df_base = obtener_puntos_cache()
         
         if not df_base.empty:
-            # Filtros
-            col1, col2, col3 = st.columns([1, 1, 2])
+            # --- FILTROS ---
+            st.markdown("### Filtros de Búsqueda")
+            col1, col2, col3, col4 = st.columns(4)
             
+            # 1. Filtro Región
             regiones = ["Todas"] + sorted(df_base['region'].dropna().unique().tolist())
-            region_sel = col1.selectbox("Filtrar por Región", regiones)
+            region_sel = col1.selectbox("Región", regiones)
             
+            # Lógica cascada para Comuna
             if region_sel != "Todas":
                 comunas = ["Todas"] + sorted(df_base[df_base['region'] == region_sel]['comuna'].dropna().unique().tolist())
             else:
                 comunas = ["Todas"] + sorted(df_base['comuna'].dropna().unique().tolist())
-                
-            comuna_sel = col2.selectbox("Filtrar por Comuna", comunas)
             
-            # Filtrado de DataFrame
+            # 2. Filtro Comuna
+            comuna_sel = col2.selectbox("Comuna", comunas)
+            
+            # 3. Filtro Clasificación (Nuevo)
+            clasificaciones = ["Todas"] + sorted(df_base['clasificacion'].astype(str).unique().tolist())
+            clasif_sel = col3.selectbox("Clasificación SSR", clasificaciones)
+
+            # 4. Buscador por Nombre (Nuevo)
+            search_txt = col4.text_input("Buscar por Nombre", "")
+
+            # --- APLICAR FILTROS ---
             df_show = df_base.copy()
             if region_sel != "Todas":
                 df_show = df_show[df_show['region'] == region_sel]
             if comuna_sel != "Todas":
                 df_show = df_show[df_show['comuna'] == comuna_sel]
+            if clasif_sel != "Todas":
+                df_show = df_show[df_show['clasificacion'] == clasif_sel]
+            if search_txt:
+                df_show = df_show[df_show['nombre_oficial'].str.contains(search_txt, case=False, na=False)]
                 
-            # Métricas rápidas
-            col3.metric("Puntos Visualizados", len(df_show))
+            # Métricas
+            st.caption(f"Visualizando {len(df_show)} registros")
             
-            # --- MAPA GOOGLE HÍBRIDO ---
+            # --- MAPA ---
             if not df_show.empty:
                 avg_lat = df_show['latitud'].mean()
                 avg_lon = df_show['longitud'].mean()
@@ -204,6 +225,7 @@ def main_app():
 
                 marker_cluster = MarkerCluster().add_to(m)
                 
+                # Limitamos marcadores si son demasiados para no pegar el navegador (opcional, aquí pongo todos)
                 for idx, row in df_show.iterrows():
                     detalles = row['detalles'] if row['detalles'] else {}
                     arranques = detalles.get('arranques', 'S/I')
@@ -226,9 +248,43 @@ def main_app():
                         icon=folium.Icon(color="blue" if tipo == "SSR" else "red", icon="info-sign")
                     ).add_to(marker_cluster)
                 
-                st_folium(m, width="100%", height=700)
+                st_folium(m, width="100%", height=600)
             else:
                 st.warning("No hay datos con esos filtros.")
+
+            # --- TABLA DE DATOS (NUEVA SECCIÓN) ---
+            st.markdown("---")
+            st.subheader("📋 Detalle de Registros")
+            
+            if not df_show.empty:
+                # Preparamos dataframe limpio para mostrar
+                df_display = df_show[[
+                    'region', 'comuna', 'nombre_oficial', 'tipo_punto', 
+                    'arranques', 'clasificacion', 'rut', 'beneficiarios'
+                ]].copy()
+                
+                # Renombrar columnas para que se vean bonitas
+                df_display.columns = [
+                    'Región', 'Comuna', 'Nombre Oficial', 'Tipo', 
+                    'Arranques', 'Clasificación', 'RUT', 'Beneficiarios'
+                ]
+                
+                # Ordenar por defecto: Región -> Comuna
+                df_display = df_display.sort_values(by=['Región', 'Comuna'])
+                
+                # Mostrar tabla interactiva moderna
+                st.dataframe(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Arranques": st.column_config.NumberColumn(format="%d"),
+                        "Beneficiarios": st.column_config.NumberColumn(format="%d"),
+                    }
+                )
+            else:
+                st.info("No hay datos para mostrar en la tabla.")
+
         else:
             st.info("La base de datos está vacía. Ve a la pestaña de Carga.")
 
