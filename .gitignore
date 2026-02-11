@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data
+*.csv
+*.xlsx

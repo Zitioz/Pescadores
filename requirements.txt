@@ -1,0 +1,7 @@
+streamlit
+supabase
+pandas
+folium
+streamlit-folium
+openpyxl
+plotly
