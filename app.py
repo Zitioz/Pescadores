@@ -139,7 +139,7 @@ def obtener_puntos_cache():
         
     df = pd.DataFrame(all_rows)
     
-    # Pre-procesamiento: Extraer columnas clave del JSON 'detalles' para facilitar filtrado
+    # Pre-procesamiento
     if not df.empty and 'detalles' in df.columns:
         df['arranques'] = df['detalles'].apply(lambda x: x.get('arranques') if x else 0)
         df['clasificacion'] = df['detalles'].apply(lambda x: x.get('clasificacion') if x else 'S/I')
@@ -187,11 +187,11 @@ def main_app():
             # 2. Filtro Comuna
             comuna_sel = col2.selectbox("Comuna", comunas)
             
-            # 3. Filtro Clasificación (Nuevo)
+            # 3. Filtro Clasificación
             clasificaciones = ["Todas"] + sorted(df_base['clasificacion'].astype(str).unique().tolist())
             clasif_sel = col3.selectbox("Clasificación SSR", clasificaciones)
 
-            # 4. Buscador por Nombre (Nuevo)
+            # 4. Buscador por Nombre
             search_txt = col4.text_input("Buscar por Nombre", "")
 
             # --- APLICAR FILTROS ---
@@ -225,7 +225,6 @@ def main_app():
 
                 marker_cluster = MarkerCluster().add_to(m)
                 
-                # Limitamos marcadores si son demasiados para no pegar el navegador (opcional, aquí pongo todos)
                 for idx, row in df_show.iterrows():
                     detalles = row['detalles'] if row['detalles'] else {}
                     arranques = detalles.get('arranques', 'S/I')
@@ -248,31 +247,30 @@ def main_app():
                         icon=folium.Icon(color="blue" if tipo == "SSR" else "red", icon="info-sign")
                     ).add_to(marker_cluster)
                 
-                st_folium(m, width="100%", height=600)
+                # --- SOLUCIÓN ERROR DE CARGA: returned_objects=[] ---
+                # Esto evita que el mapa intente devolver datos pesados al backend,
+                # lo cual soluciona el error de "trouble loading component" con muchos puntos.
+                st_folium(m, width="100%", height=600, returned_objects=[])
             else:
                 st.warning("No hay datos con esos filtros.")
 
-            # --- TABLA DE DATOS (NUEVA SECCIÓN) ---
+            # --- TABLA DE DATOS ---
             st.markdown("---")
             st.subheader("📋 Detalle de Registros")
             
             if not df_show.empty:
-                # Preparamos dataframe limpio para mostrar
                 df_display = df_show[[
                     'region', 'comuna', 'nombre_oficial', 'tipo_punto', 
                     'arranques', 'clasificacion', 'rut', 'beneficiarios'
                 ]].copy()
                 
-                # Renombrar columnas para que se vean bonitas
                 df_display.columns = [
                     'Región', 'Comuna', 'Nombre Oficial', 'Tipo', 
                     'Arranques', 'Clasificación', 'RUT', 'Beneficiarios'
                 ]
                 
-                # Ordenar por defecto: Región -> Comuna
                 df_display = df_display.sort_values(by=['Región', 'Comuna'])
                 
-                # Mostrar tabla interactiva moderna
                 st.dataframe(
                     df_display,
                     use_container_width=True,
