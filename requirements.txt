@@ -1,7 +1,7 @@
 streamlit
 supabase
 pandas
-folium
-streamlit-folium
+folium>=0.17.0
+streamlit-folium>=0.21.0
 openpyxl
 plotly
