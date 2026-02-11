@@ -7,8 +7,8 @@ from folium.plugins import MarkerCluster
 import time
 
 # --- 1. CONFIGURACIÓN ---
-# Cambiamos layout a "centered" para que se vea más como web y menos como dashboard ancho
-st.set_page_config(page_title="Inteligencia Territorial", page_icon="🗺️", layout="centered")
+# Volvemos a WIDE como pediste, se aprovecha mejor el mapa
+st.set_page_config(page_title="Inteligencia Territorial", page_icon="🗺️", layout="wide")
 
 # Inicializar Supabase
 @st.cache_resource
@@ -22,22 +22,25 @@ supabase = init_supabase()
 # --- 2. FUNCIONES DE AUTH ---
 def mostrar_login():
     st.markdown("## 🔐 Acceso a Plataforma")
-    email = st.text_input("Correo Electrónico")
-    password = st.text_input("Contraseña", type="password")
-    
-    if st.button("Iniciar Sesión"):
-        try:
-            res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-            st.session_state["user"] = res.user
-            st.session_state["access_token"] = res.session.access_token
-            st.success("Bienvenido!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error de acceso: {e}")
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        email = st.text_input("Correo Electrónico")
+        password = st.text_input("Contraseña", type="password")
+        
+        if st.button("Iniciar Sesión", use_container_width=True):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                st.session_state["user"] = res.user
+                st.session_state["access_token"] = res.session.access_token
+                st.success("Bienvenido!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error de acceso: {e}")
 
 def cerrar_sesion():
     supabase.auth.sign_out()
     st.session_state.pop("user", None)
+    st.cache_data.clear() # Limpiamos caché al salir por seguridad
     st.rerun()
 
 # --- 3. FUNCIONES DE DATOS ---
@@ -103,6 +106,10 @@ def cargar_excel_ssr(file):
                 supabase.table("puntos_territoriales").insert(batch).execute()
             
             progress_bar.progress(100)
+            
+            # IMPORTANTE: Limpiamos la caché para que el mapa muestre los nuevos datos de inmediato
+            st.cache_data.clear()
+            
             return len(records_to_insert)
         return 0
 
@@ -110,16 +117,12 @@ def cargar_excel_ssr(file):
         st.error(f"Error procesando el archivo: {e}")
         return None
 
-def obtener_puntos(filtro_region=None, filtro_comuna=None):
-    query = supabase.table("puntos_territoriales").select("*")
-    
-    if filtro_region and filtro_region != "Todas":
-        query = query.eq("region", filtro_region)
-    if filtro_comuna and filtro_comuna != "Todas":
-        query = query.eq("comuna", filtro_comuna)
-        
-    # --- CAMBIO: AUMENTO DE LIMITE A 5000 ---
-    response = query.range(0, 5000).execute()
+# Usamos cache_data con TTL (tiempo de vida) para que no consulte la BD a cada click
+# pero se refresque si forzamos el borrado de caché
+@st.cache_data(ttl=3600) 
+def obtener_puntos_cache():
+    # Pedimos hasta 10,000 registros para asegurar que traiga todo
+    response = supabase.table("puntos_territoriales").select("*").range(0, 10000).execute()
     return pd.DataFrame(response.data)
 
 # --- 4. INTERFAZ PRINCIPAL ---
@@ -135,11 +138,13 @@ def main_app():
     with tab1:
         st.title("Visor Territorial")
         
-        col1, col2 = st.columns(2)
-        
-        df_base = obtener_puntos()
+        # Cargamos datos usando la función con caché
+        df_base = obtener_puntos_cache()
         
         if not df_base.empty:
+            # Filtros
+            col1, col2, col3 = st.columns([1, 1, 2])
+            
             regiones = ["Todas"] + sorted(df_base['region'].dropna().unique().tolist())
             region_sel = col1.selectbox("Filtrar por Región", regiones)
             
@@ -150,23 +155,23 @@ def main_app():
                 
             comuna_sel = col2.selectbox("Filtrar por Comuna", comunas)
             
+            # Filtrado de DataFrame
             df_show = df_base.copy()
             if region_sel != "Todas":
                 df_show = df_show[df_show['region'] == region_sel]
             if comuna_sel != "Todas":
                 df_show = df_show[df_show['comuna'] == comuna_sel]
                 
-            st.caption(f"Mostrando {len(df_show)} puntos")
+            # Métricas rápidas
+            col3.metric("Puntos Visualizados", len(df_show))
             
             # --- MAPA GOOGLE HÍBRIDO ---
             if not df_show.empty:
                 avg_lat = df_show['latitud'].mean()
                 avg_lon = df_show['longitud'].mean()
                 
-                # tiles=None desactiva el mapa por defecto para poner el de Google
                 m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6 if region_sel == "Todas" else 10, tiles=None)
                 
-                # Capa Google Híbrido (Satelite + Calles)
                 folium.TileLayer(
                     tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
                     attr='Google',
@@ -199,7 +204,7 @@ def main_app():
                         icon=folium.Icon(color="blue" if tipo == "SSR" else "red", icon="info-sign")
                     ).add_to(marker_cluster)
                 
-                st_folium(m, width="100%", height=600)
+                st_folium(m, width="100%", height=700) # Aumenté un poco la altura para aprovechar el layout wide
             else:
                 st.warning("No hay datos con esos filtros.")
         else:
