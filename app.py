@@ -7,7 +7,6 @@ from folium.plugins import MarkerCluster
 import time
 
 # --- 1. CONFIGURACIÓN ---
-# Volvemos a WIDE como pediste, se aprovecha mejor el mapa
 st.set_page_config(page_title="Inteligencia Territorial", page_icon="🗺️", layout="wide")
 
 # Inicializar Supabase
@@ -40,7 +39,7 @@ def mostrar_login():
 def cerrar_sesion():
     supabase.auth.sign_out()
     st.session_state.pop("user", None)
-    st.cache_data.clear() # Limpiamos caché al salir por seguridad
+    st.cache_data.clear() # Limpiamos caché
     st.rerun()
 
 # --- 3. FUNCIONES DE DATOS ---
@@ -107,9 +106,8 @@ def cargar_excel_ssr(file):
             
             progress_bar.progress(100)
             
-            # IMPORTANTE: Limpiamos la caché para que el mapa muestre los nuevos datos de inmediato
+            # Limpiamos caché forzosamente
             st.cache_data.clear()
-            
             return len(records_to_insert)
         return 0
 
@@ -117,18 +115,42 @@ def cargar_excel_ssr(file):
         st.error(f"Error procesando el archivo: {e}")
         return None
 
-# Usamos cache_data con TTL (tiempo de vida) para que no consulte la BD a cada click
-# pero se refresque si forzamos el borrado de caché
-@st.cache_data(ttl=3600) 
+# --- SOLUCIÓN ROBUSTA: PAGINACIÓN ---
+# Descarga en bucle hasta traer todos los datos, ignorando límites del servidor
+@st.cache_data(ttl=3600)
 def obtener_puntos_cache():
-    # Pedimos hasta 10,000 registros para asegurar que traiga todo
-    response = supabase.table("puntos_territoriales").select("*").range(0, 10000).execute()
-    return pd.DataFrame(response.data)
+    all_rows = []
+    start = 0
+    batch_size = 1000  # Pedimos de 1000 en 1000
+    
+    while True:
+        # Consultamos el rango actual
+        response = supabase.table("puntos_territoriales").select("*").range(start, start + batch_size - 1).execute()
+        rows = response.data
+        
+        if not rows:
+            break
+            
+        all_rows.extend(rows)
+        
+        # Si la respuesta es menor al tamaño del batch, llegamos al final
+        if len(rows) < batch_size:
+            break
+            
+        start += batch_size
+        
+    return pd.DataFrame(all_rows)
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
 def main_app():
     st.sidebar.title(f"Usuario: {st.session_state['user'].email}")
+    
+    # Botón útil para refrescar si cargaste datos y no se ven
+    if st.sidebar.button("🔄 Actualizar Datos"):
+        st.cache_data.clear()
+        st.rerun()
+
     if st.sidebar.button("Cerrar Sesión"):
         cerrar_sesion()
 
@@ -138,7 +160,7 @@ def main_app():
     with tab1:
         st.title("Visor Territorial")
         
-        # Cargamos datos usando la función con caché
+        # Cargamos datos (ahora con loop infinito hasta traer todo)
         df_base = obtener_puntos_cache()
         
         if not df_base.empty:
@@ -204,7 +226,7 @@ def main_app():
                         icon=folium.Icon(color="blue" if tipo == "SSR" else "red", icon="info-sign")
                     ).add_to(marker_cluster)
                 
-                st_folium(m, width="100%", height=700) # Aumenté un poco la altura para aprovechar el layout wide
+                st_folium(m, width="100%", height=700)
             else:
                 st.warning("No hay datos con esos filtros.")
         else:
